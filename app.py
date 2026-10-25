@@ -1,10 +1,10 @@
-import os, re, io, zipfile, socket, ipaddress, time, secrets
+import os, re, io, zipfile, socket, ipaddress, time, secrets, json, html
 from collections import defaultdict
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify, session, send_file, Response
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -148,6 +148,9 @@ PATTERNS=[
  ('Possible path traversal sink','high',re.compile(r'(?i)(open|readFile|readFileSync|send_file|File\.open)\s*\([^\n)]*(request\.|req\.|params?\[|query\[|input\[)'),'Resolve user-supplied paths against a fixed base directory and enforce an allowlist; never trust raw paths.'),
  ('Possible disabled authentication / permissive access','high',re.compile(r'(?i)(auth(?:entication)?_required\s*=\s*False|login_required\s*=\s*False|verify\s*=\s*False|allow_unauthenticated\s*=\s*True)'),'Confirm the setting is intentional and enforce authentication/authorization server-side.'),
  ('Session cookie security setting','medium',re.compile(r'(?i)(SESSION_COOKIE_SECURE|cookie_secure)\s*[:=]\s*False'),'Enable secure session cookies in production over HTTPS, and review HttpOnly and SameSite settings.'),
+ ('Potential password guessing exposure','medium',re.compile(r'(?i)(rate.?limit|throttle|lockout|login_attempts|failed_login).{0,80}(disable|false|0|none)|(?:disable|false|0|none).{0,80}(rate.?limit|throttle|lockout|login_attempts|failed_login)'),'Review server-side rate limiting, progressive delays, breached-password controls, and alerting. This pattern alone does not prove missing protections.'),
+ ('Potential weak session/token generation','high',re.compile(r'(?i)(session|token|reset_token|csrf_token).{0,80}(random\.random|Math\.random|rand\s*\()'),'Use a cryptographically secure random generator for session IDs and security tokens.'),
+ ('Potential authentication check omission','medium',re.compile(r'(?i)(@app\.(route|get|post|put|delete)|router\.(get|post|put|delete)|app\.(get|post|put|delete))[^\n]{0,180}(admin|private|account|profile|dashboard|settings)'),'Manually verify that every sensitive route performs server-side authentication and authorization; route names alone are not proof of a flaw.'),
 ]
 ALLOWED_EXT={'.py','.php','.js','.ts','.jsx','.tsx','.html','.htm','.sql','.rb','.go','.java','.cs','.json','.yml','.yaml','.env.example','.config','.xml'}
 
@@ -213,7 +216,67 @@ def api_audit():
     try: return jsonify(result=audit_zip(request.files['source_zip']))
     except ValueError as e: return jsonify(error=str(e)),400
 
+@app.post('/api/export/<fmt>')
+def api_export(fmt):
+    if fmt not in ('json', 'txt', 'pdf'):
+        return jsonify(error='Choose JSON, TXT, or PDF.'), 400
+    payload=request.get_json(silent=True) or {}
+    if not secrets.compare_digest(session.get('csrf',''),str(payload.get('csrf',''))):
+        return jsonify(error='Session expired. Refresh the page and try again.'),403
+    report=payload.get('report')
+    if not isinstance(report,dict): return jsonify(error='No report data was provided.'),400
+    # Bound the export payload and avoid rendering arbitrary huge content.
+    try: raw=json.dumps(report, ensure_ascii=False, separators=(',',':')).encode('utf-8')
+    except (TypeError,ValueError): return jsonify(error='Report data is invalid.'),400
+    if len(raw)>1_500_000: return jsonify(error='Report is too large to export.'),413
+    stamp=datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
+    if fmt=='json':
+        return Response(json.dumps(report,ensure_ascii=False,indent=2),mimetype='application/json',headers={'Content-Disposition':f'attachment; filename="night-hex-report-{stamp}.json"'})
+    if fmt=='txt':
+        lines=['NIGHT HEX SECURITY AUDIT REPORT','='*34]
+        def walk(value, prefix=''):
+            if isinstance(value,dict):
+                for k,v in value.items():
+                    if isinstance(v,(dict,list)): lines.append(f'\n{prefix}{k}:'); walk(v,prefix+'  ')
+                    else: lines.append(f'{prefix}{k}: {v}')
+            elif isinstance(value,list):
+                for i,item in enumerate(value,1): lines.append(f'{prefix}[{i}]'); walk(item,prefix+'  ')
+            else: lines.append(f'{prefix}{value}')
+        walk(report)
+        return Response('\n'.join(lines),mimetype='text/plain; charset=utf-8',headers={'Content-Disposition':f'attachment; filename="night-hex-report-{stamp}.txt"'})
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Preformatted
+        buff=io.BytesIO(); doc=SimpleDocTemplate(buff,pagesize=A4,rightMargin=16*mm,leftMargin=16*mm,topMargin=16*mm,bottomMargin=16*mm)
+        styles=getSampleStyleSheet(); styles.add(ParagraphStyle(name='SmallMono',parent=styles['Code'],fontSize=7,leading=9,wordWrap='CJK'))
+        story=[Paragraph('NIGHT HEX Security Audit Report',styles['Title']),Spacer(1,5*mm),Paragraph('Generated '+datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),styles['Normal']),Spacer(1,4*mm)]
+        # Render a compact readable report; content is escaped before Paragraph parsing.
+        def pdf_walk(value, depth=0):
+            if isinstance(value,dict):
+                for k,v in value.items():
+                    label=html.escape(str(k))
+                    if isinstance(v,(dict,list)):
+                        story.append(Paragraph(('<b>'+label+'</b>') if depth==0 else label,styles['Heading3'] if depth==0 else styles['Heading4']))
+                        pdf_walk(v,depth+1)
+                    else:
+                        txt=html.escape(str(v))[:3000]
+                        story.append(Paragraph('<b>'+label+':</b> '+txt,styles['BodyText']))
+                        story.append(Spacer(1,1.5*mm))
+            elif isinstance(value,list):
+                for i,item in enumerate(value,1):
+                    story.append(Paragraph('Item '+str(i),styles['Heading4']))
+                    pdf_walk(item,depth+1)
+            else: story.append(Paragraph(html.escape(str(value))[:3000],styles['BodyText']))
+        pdf_walk(report)
+        doc.build(story); buff.seek(0)
+        return send_file(buff,mimetype='application/pdf',as_attachment=True,download_name=f'night-hex-report-{stamp}.pdf')
+    except ImportError:
+        return jsonify(error='PDF export dependency is missing. Redeploy after installing requirements.txt.'),500
+
 @app.get('/healthz')
-def health(): return jsonify(status='ok',service='night-hex-advanced-v5')
+def health(): return jsonify(status='ok',service='night-hex-advanced-v6')
 
 if __name__=='__main__': app.run(host='0.0.0.0',port=int(os.environ.get('PORT','5000')),debug=False)
