@@ -8,8 +8,6 @@ services:
     healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
-        value: 3.12.6
+        value: 3.12.7
       - key: FLASK_SECRET_KEY
         generateValue: true
-      - key: SCANNER_ACCESS_KEY
-        sync: false
