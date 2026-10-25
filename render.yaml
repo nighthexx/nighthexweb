@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: nighthex
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --threads 4 --timeout 45
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.6
+      - key: FLASK_SECRET_KEY
+        generateValue: true
+      - key: SCANNER_ACCESS_KEY
+        sync: false
