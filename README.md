@@ -22,3 +22,17 @@ Flask security-audit dashboard for bounded passive website checks, public RDAP d
 - URL scanning cannot inspect backend source code. Upload a source ZIP you are authorized to review for code-level evidence.
 - Domain lookup does not bypass RDAP privacy redaction or infer private owner information.
 - Upload only code you are authorized to audit. In-memory rate limiting resets on restart; for public production use, add a shared rate limiter and abuse monitoring.
+
+
+## Version 8 updates
+- Domain Intelligence normalizes public domain registration records into a clean NIGHT HEX report with registrar, registration/updated/expiry events, status codes, nameservers, DNSSEC and any publicly returned organization/contact fields.
+- The UI shows a neutral “public registration data” label and does not embed an external lookup webpage. Records are fetched through the public RDAP protocol; some fields may be missing or privacy-redacted.
+- Website scan includes an explainable 0–100 exposure indicator based on observed passive configuration findings. This is not a probability that a site can be hacked and is not proof of exploitability.
+- JSON, TXT and PDF exports include the report data.
+- Scanning remains passive: no credential guessing, exploit payloads, authentication bypass, form submission, or private-file access.
+
+
+## V9 UI update
+- Website scans, Domain Intelligence lookups, and source ZIP audits open in a shared responsive results modal.
+- The modal displays an animated loading state and keeps results in a scrollable panel.
+- JSON, TXT, and PDF export actions use compact rounded download pills.

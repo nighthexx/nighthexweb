@@ -100,39 +100,68 @@ def scan_site(raw):
         add('CSRF token hint','low','REVIEW',f'{csrf_hints} POST form(s) have no obvious CSRF/token input in the returned HTML. Tokens may be provided by another mechanism; this is not proof of CSRF.',
             'Verify server-side CSRF protection for state-changing requests; use framework-supported CSRF middleware.')
     counts={s:sum(1 for c in checks if c['severity']==s and c['status']=='REVIEW') for s in ('high','medium','low')}
-    return {'target':root['url'],'host':root['host'],'checked_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),'http_status':root['status'],'content_type':root['content_type'],'response_time':root['seconds'],'checks':checks,'forms':forms,'summary':counts,'limitations':'Bounded passive scan only. No exploitation, credential testing, form submission, or access-control bypass. Findings are observations, not proof of a vulnerability.'}
+    # A transparent heuristic exposure indicator, not a probability that a site can be hacked.
+    score=0
+    weights={'high':22,'medium':12,'low':5}
+    for c in checks:
+        if c.get('status')=='REVIEW': score += weights.get(c.get('severity'),0)
+    exposure_score=min(100,score)
+    if exposure_score >= 60: exposure_level='Elevated exposure indicators'
+    elif exposure_score >= 30: exposure_level='Several exposure indicators'
+    elif exposure_score > 0: exposure_level='Some exposure indicators'
+    else: exposure_level='Few indicators observed'
+    return {'target':root['url'],'host':root['host'],'checked_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),'http_status':root['status'],'content_type':root['content_type'],'response_time':root['seconds'],'checks':checks,'forms':forms,'summary':counts,'exposure_score':exposure_score,'exposure_level':exposure_level,'exposure_score_note':'This 0–100 score summarizes observed configuration indicators from a limited passive scan. It is not the probability of being hacked and cannot confirm exploitability.','limitations':'Bounded passive scan only. No exploitation, credential testing, form submission, or access-control bypass. Findings are observations, not proof of a vulnerability.'}
 
 
 def domain_lookup(raw):
     domain=(raw or '').strip().lower().rstrip('.')
-    if domain.startswith('http://') or domain.startswith('https://'): domain=urlparse(domain).hostname or ''
-    if not re.fullmatch(r'(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}',domain): raise ValueError('Enter a valid domain name, e.g. example.com.')
+    if domain.startswith('http://') or domain.startswith('https://'):
+        domain=urlparse(domain).hostname or ''
+    if not re.fullmatch(r'(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}',domain):
+        raise ValueError('Enter a valid domain name, e.g. example.com.')
     try:
-        r=requests.get('https://rdap.org/domain/'+domain,headers={'Accept':'application/rdap+json','User-Agent':UA},timeout=10,allow_redirects=True)
-        if r.status_code==404: return {'domain':domain,'status':'No public RDAP record found','events':[],'nameservers':[],'entities':[],'note':'No public record returned. This does not establish who owns the domain.'}
-        r.raise_for_status(); data=r.json()
-    except (requests.RequestException,ValueError) as e:
-        raise ValueError('Public RDAP lookup failed or returned an invalid response. Try again later.')
+        # Fetch public registration data over RDAP; present the normalized fields in NIGHT HEX UI.
+        r=requests.get('https://rdap.org/domain/'+domain,
+                       headers={'Accept':'application/rdap+json','User-Agent':UA},
+                       timeout=10,allow_redirects=True)
+        if r.status_code==404:
+            return {'domain':domain,'status':'No public registration record found','handle':None,
+                    'events':[],'nameservers':[],'entities':[],'domain_status':[],
+                    'secure_dns':None,'registrar':None,
+                    'note':'No public registration record was returned. This does not establish who owns the domain.'}
+        r.raise_for_status()
+        data=r.json()
+    except (requests.RequestException,ValueError):
+        raise ValueError('Public domain registration lookup failed or returned an invalid response. Try again later.')
+
     events=[]
     for ev in data.get('events',[]):
         action=ev.get('eventAction',''); date=ev.get('eventDate','')
         if action and date: events.append({'action':action,'date':date})
-    nameservers=[x.get('ldhName') for x in data.get('nameservers',[]) if x.get('ldhName')]
-    entities=[]
+    nameservers=sorted({x.get('ldhName') for x in data.get('nameservers',[]) if x.get('ldhName')})
+    statuses=data.get('status',[]) or []
+    secure_dns=data.get('secureDNS')
+    entities=[]; registrar=None
     for ent in data.get('entities',[]):
         roles=ent.get('roles',[]); v=ent.get('vcardArray',[])
         props=v[1] if isinstance(v,list) and len(v)>1 and isinstance(v[1],list) else []
         card={}
         for prop in props:
-            if len(prop)>=4 and prop[0] in ('fn','org','email','tel','adr'):
-                val=prop[3]
-                if prop[0]=='adr':
-                    # Publicly returned postal addresses only; never attempt to infer or bypass redaction.
-                    if isinstance(val,dict): val=', '.join(str(x) for x in val.values() if x)
-                    elif isinstance(val,list): val=', '.join(str(x) for x in val if x)
-                if isinstance(val,(str,int,float)) and str(val).strip(): card[prop[0]]=str(val)[:250]
-        if card or roles: entities.append({'roles':roles,'public_contact':card,'redacted':not bool(card)})
-    return {'domain':data.get('ldhName',domain),'status':'Public RDAP record found','handle':data.get('handle'),'port43':data.get('port43'),'events':events,'nameservers':nameservers,'entities':entities,'note':'Only information returned by the public RDAP service is shown. Registrant data may be privacy-redacted or unavailable; no privacy bypass is attempted.'}
+            if len(prop)<4 or prop[0] not in ('fn','org','email','tel','adr'): continue
+            val=prop[3]
+            if prop[0]=='adr':
+                if isinstance(val,dict): val=', '.join(str(x) for x in val.values() if x)
+                elif isinstance(val,list): val=', '.join(str(x) for x in val if x)
+            if isinstance(val,(str,int,float)) and str(val).strip(): card[prop[0]]=str(val)[:250]
+        item={'roles':roles,'public_contact':card,'redacted':not bool(card)}
+        if card or roles: entities.append(item)
+        if 'registrar' in roles and card:
+            registrar=card.get('org') or card.get('fn') or registrar
+    return {'domain':data.get('ldhName',domain),'status':'Public registration record found',
+            'handle':data.get('handle'),'registrar':registrar,'events':events,
+            'nameservers':nameservers,'entities':entities,'domain_status':statuses,
+            'secure_dns':secure_dns,
+            'note':'Showing available public registration fields. Some registrant details may be privacy-redacted or not published; no private data is inferred or bypassed.'}
 
 # Conservative static source audit: flags suspicious patterns for human review; does not execute uploaded files.
 PATTERNS=[
@@ -277,6 +306,6 @@ def api_export(fmt):
         return jsonify(error='PDF export dependency is missing. Redeploy after installing requirements.txt.'),500
 
 @app.get('/healthz')
-def health(): return jsonify(status='ok',service='night-hex-advanced-v6')
+def health(): return jsonify(status='ok',service='night-hex-advanced-v8')
 
 if __name__=='__main__': app.run(host='0.0.0.0',port=int(os.environ.get('PORT','5000')),debug=False)
