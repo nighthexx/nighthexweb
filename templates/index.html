@@ -1,6 +1,76 @@
-<!doctype html><html lang="bn"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#090b14"><title>NIGHT HEX Advanced</title><link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}"></head><body><header class="top"><img src="{{ url_for('static',filename='logo.svg') }}" alt="NIGHT HEX" class="logo"><div><h1>NIGHT HEX <span>ADVANCED</span></h1><p>Responsible website security & domain audit</p></div></header><main><section class="hero"><div class="eyebrow">PASSIVE SECURITY · SAFE CONFIGURATION CHECKS · SOURCE AUDIT</div><h2>এক জায়গায় ওয়েবসাইটের নিরাপত্তা ও ডোমেন তথ্য</h2><p>URL স্ক্যানের জন্য Access Key লাগবে না। শুধু নিজের বা অনুমোদিত সাইট পরীক্ষা করুন।</p></section>
-<nav class="tabs"><button class="tab active" data-tab="scan">Website Scan</button><button class="tab" data-tab="domain">Domain Info</button><button class="tab" data-tab="audit">Source Code Audit</button></nav>
-<section class="panel tabpanel" id="tab-scan"><h3>ওয়েবসাইট স্ক্যান</h3><label for="url">Website URL</label><div class="inputrow"><input id="url" type="url" placeholder="https://example.com" autocomplete="url"><button id="scanBtn" class="primary">Scan Website</button></div><p class="muted">নিরাপদ passive checks: কোনো SQLi payload, password guessing, login bypass, ফাইল পড়ার চেষ্টা বা exploit চালানো হয় না।</p><div id="scanResult" class="result"></div></section>
-<section class="panel tabpanel hidden" id="tab-domain"><h3>Domain registration lookup</h3><label for="domain">ডোমেন নাম</label><div class="inputrow"><input id="domain" placeholder="example.com" autocomplete="off"><button id="domainBtn" class="primary">Lookup Domain</button></div><p class="muted">শুধু পাবলিক RDAP রেকর্ড দেখাবে। গোপন/রেড্যাক্ট করা ব্যক্তিগত তথ্য বাইপাস করা হবে না।</p><div id="domainResult" class="result"></div></section>
-<section class="panel tabpanel hidden" id="tab-audit"><h3>Source Code Audit</h3><p>নিজের বা অনুমোদিত প্রকল্পের ZIP আপলোড করুন। কোড execute হবে না; SQL query concatenation, দুর্বল password hashing, path traversal, authentication/session configuration এবং hardcoded secret-এর সম্ভাব্য pattern খুঁজবে। এটি static scan—কোড execute হবে না।</p><form id="auditForm"><input type="hidden" name="csrf" value="{{ csrf }}"><label for="sourceZip">Source ZIP (সর্বোচ্চ 8 MB)</label><input id="sourceZip" name="source_zip" type="file" accept=".zip" required><button class="primary" type="submit" id="auditBtn">Audit Source ZIP</button></form><div id="auditResult" class="result"></div></section>
-<section class="notice"><strong>গুরুত্বপূর্ণ সীমাবদ্ধতা</strong><p>URL স্ক্যান থেকে backend source code বা নিশ্চিত মালিকানা জানা যায় না। RDAP-এ registrant তথ্য privacy-protected হলে সেটি এখানে পাওয়া যাবে না। SQL Injection, password guessing, authentication bypass ও path traversal-এর সক্রিয় আক্রমণাত্মক পরীক্ষা এই সংস্করণে চালানো হয় না। Source audit সম্ভাব্য code pattern শনাক্ত করে; false positive হতে পারে এবং প্রতিটি finding হাতে যাচাই করুন।</p></section></main><footer>NIGHT HEX · Responsible Security Tools · <a href="{{ telegram_url }}" target="_blank" rel="noopener">Telegram Contact</a> · <a href="{{ channel_url }}" target="_blank" rel="noopener">Channel</a></footer><script>window.NH_CSRF={{ csrf|tojson }};</script><script src="{{ url_for('static',filename='app.js') }}" defer></script></body></html>
+<!doctype html>
+<html lang="bn">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#090b14"><meta name="description" content="NIGHT HEX responsible website security and source code audit">
+  <title>NIGHT HEX | Advanced Security Audit</title>
+  <link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}">
+</head>
+<body>
+<header class="top shell">
+  <img src="{{ url_for('static',filename='logo.svg') }}" alt="NIGHT HEX" class="logo">
+  <div class="brand"><h1>NIGHT HEX <span>ADVANCED</span></h1><p>Responsible Website Security & Domain Audit</p></div>
+  <div class="live"><i></i> SAFE MODE</div>
+</header>
+<main class="shell">
+  <section class="hero">
+    <div class="eyebrow">SECURITY AUDIT PLATFORM <span>•</span> V7</div>
+    <h2>ওয়েবসাইটের নিরাপত্তা<br><em>এক জায়গায় যাচাই করুন</em></h2>
+    <p>Public response checks, source-code review, domain registration data এবং ডাউনলোডযোগ্য রিপোর্ট—একটি নিয়ন্ত্রিত ড্যাশবোর্ডে।</p>
+    <div class="hero-pills"><span>✓ No access key</span><span>✓ Source code is not executed</span><span>✓ JSON · TXT · PDF reports</span></div>
+  </section>
+
+  <section class="feature-grid" aria-label="Audit categories">
+    <article class="feature"><span class="feature-icon">01</span><div><b>SQL Injection</b><small>Source pattern review</small></div></article>
+    <article class="feature"><span class="feature-icon">02</span><div><b>Login & Password</b><small>Policy and rate-limit indicators</small></div></article>
+    <article class="feature"><span class="feature-icon">03</span><div><b>Access Control</b><small>Authentication configuration hints</small></div></article>
+    <article class="feature"><span class="feature-icon">04</span><div><b>Path Traversal</b><small>Unsafe file path patterns</small></div></article>
+  </section>
+
+  <nav class="tabs" aria-label="Tools">
+    <button class="tab active" data-tab="scan"><span>◉</span> Website Scan</button>
+    <button class="tab" data-tab="audit"><span>⌘</span> Code Audit</button>
+    <button class="tab" data-tab="domain"><span>◎</span> Domain Info</button>
+  </nav>
+
+  <section class="panel tabpanel" id="tab-scan">
+    <div class="panel-head"><div><div class="kicker">01 / LIVE WEBSITE</div><h3>Website Security Scan</h3><p>পাবলিক HTTP response ও security configuration-এর সীমিত পরীক্ষা।</p></div><span class="status-chip">PASSIVE</span></div>
+    <label for="url">Target website URL</label>
+    <div class="inputrow"><input id="url" type="url" placeholder="https://example.com" autocomplete="url"><button id="scanBtn" class="primary">Scan Website <span>→</span></button></div>
+    <div class="helper">শুধু নিজের বা লিখিত অনুমতি থাকা সাইট পরীক্ষা করুন। কোনো ফর্ম submit, credential guessing, exploit বা private file access করা হয় না।</div>
+    <div class="result" id="scanResult" aria-live="polite"></div>
+  </section>
+
+  <section class="panel tabpanel hidden" id="tab-audit">
+    <div class="panel-head"><div><div class="kicker">02 / SOURCE INSPECTION</div><h3>Source Code Audit</h3><p>সোর্স ZIP-এ সম্ভাব্য ঝুঁকিপূর্ণ কোড-প্যাটার্ন খুঁজুন।</p></div><span class="status-chip">STATIC</span></div>
+    <div class="audit-categories">
+      <div><b>SQL Injection</b><small>Dynamic query construction</small></div><div><b>Password Guessing</b><small>Rate-limit / lockout indicators</small></div><div><b>Authentication</b><small>Session and route configuration</small></div><div><b>Path Traversal</b><small>User-controlled file paths</small></div>
+    </div>
+    <form id="auditForm"><input type="hidden" name="csrf" value="{{ csrf }}"><label for="sourceZip">Source ZIP file <small>(সর্বোচ্চ 8 MB)</small></label><input id="sourceZip" name="source_zip" type="file" accept=".zip" required><button class="primary" type="submit" id="auditBtn">Audit Source ZIP <span>→</span></button></form>
+    <div class="helper">ZIP-এর কোড execute করা হয় না। Pattern match সম্ভাব্য ইঙ্গিত—প্রতিটি ফলাফল হাতে যাচাই করা দরকার।</div>
+    <div class="result" id="auditResult" aria-live="polite"></div>
+  </section>
+
+  <section class="panel tabpanel hidden" id="tab-domain">
+    <div class="panel-head"><div><div class="kicker">03 / PUBLIC REGISTRATION DATA</div><h3>Domain Information</h3><p>পাবলিক RDAP রেকর্ড থেকে ডোমেনের তথ্য দেখুন।</p></div><span class="status-chip">RDAP</span></div>
+    <label for="domain">Domain name</label><div class="inputrow"><input id="domain" placeholder="example.com" autocomplete="off"><button id="domainBtn" class="primary">Lookup Domain <span>→</span></button></div>
+    <div class="helper">শুধু প্রকাশ্যে উপলভ্য তথ্য দেখানো হবে। Privacy-redacted ব্যক্তিগত তথ্য বাইপাস করা হবে না।</div>
+    <div class="result" id="domainResult" aria-live="polite"></div>
+  </section>
+
+  <section class="notice"><div class="notice-icon">i</div><div><b>Scope & limitations</b><p>এই টুলটি নিরাপদ, নিয়ন্ত্রিত অডিটের জন্য। SQLi, password guessing, authentication bypass বা path traversal-এর মাধ্যমে অননুমোদিত প্রবেশ/ডেটা সংগ্রহ করে না। URL scan backend source code দেখতে পারে না; বিস্তারিত code evidence পেতে Source Code Audit ব্যবহার করুন।</p></div></section>
+</main>
+<footer class="site-footer">
+  <div class="footer-brand">
+    <div class="footer-mark">NH<span>_</span></div>
+    <div><strong>NIGHT HEX</strong><small>RESPONSIBLE SECURITY TOOLS</small></div>
+  </div>
+  <div class="footer-links">
+    <a class="footer-link" href="{{ channel_url }}" target="_blank" rel="noopener noreferrer"><span class="footer-link-icon">◈</span><span><strong>CYBER X OF BANGLADESH</strong><small>Official Telegram Channel</small></span><span class="footer-arrow">↗</span></a>
+    <a class="footer-link join-link" href="{{ channel_url }}" target="_blank" rel="noopener noreferrer"><span class="footer-link-icon">➤</span><span><strong>JOIN TELEGRAM CHANNEL</strong><small>Updates, news & announcements</small></span><span class="footer-arrow">↗</span></a>
+    <a class="footer-link" href="{{ telegram_url }}" target="_blank" rel="noopener noreferrer"><span class="footer-link-icon">⌁</span><span><strong>ADMIN / DEVELOPER CONTACT</strong><small>Contact NIGHT HEX on Telegram</small></span><span class="footer-arrow">↗</span></a>
+  </div>
+  <div class="footer-bottom"><span>© NIGHT HEX · Security with responsibility</span><span class="footer-status"><i></i> SAFE MODE ENABLED</span></div>
+</footer>
+<script>window.NH_CSRF={{ csrf|tojson }};</script><script src="{{ url_for('static',filename='app.js') }}" defer></script>
+</body></html>
