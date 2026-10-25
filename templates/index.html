@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#06100f">
+  <title>NIGHT HEX Advanced — Web Security Audit</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="brand"><img src="{{ url_for('static', filename='logo.svg') }}" alt="NIGHT HEX logo"><div><h1>NIGHT HEX</h1><p>CYBER X OF BANGLADESH</p></div></div>
+  <span class="pill">● ADVANCED PASSIVE AUDIT · v3.0</span>
+</header>
+<section class="hero"><div class="eyebrow">WEB APPLICATION SECURITY ASSESSMENT</div>
+  <h2>Map the surface.<br><span>Report the weaknesses.</span></h2>
+  <p>Bounded security checks, same-origin page discovery, form inventory, and an exportable report. Built for responsible disclosure—not exploitation.</p>
+</section>
+<div class="layout">
+  <section class="panel"><h3>Start an assessment</h3><p class="sub">Enter a public website URL. The scanner visits up to 10 same-host pages. It does not submit forms or follow redirects.</p>
+    <form id="scanForm">
+      <label for="url">Target website URL</label><input type="url" id="url" placeholder="https://example.com" maxlength="2048" required>
+      <label for="accessKey" class="mt">Private scanner access key</label><input type="password" id="accessKey" placeholder="Set SCANNER_ACCESS_KEY in Render" autocomplete="current-password" required>
+      <div class="checkrow"><input type="checkbox" id="authorized" required><label for="authorized">I own this site or have explicit authorization to assess it.</label></div>
+      <button class="primary" id="scanBtn" type="submit">⌁ &nbsp; START ADVANCED AUDIT</button>
+      <p class="micro">Public hosts only · Standard ports · Access-key protected · Rate-limited</p>
+    </form><div class="error" id="errorBox" role="alert"></div>
+  </section>
+  <aside class="panel"><h3>Assessment modules</h3><p class="sub">Focused on findings that can be reviewed and responsibly reported.</p>
+    <div class="feature"><div class="ico">⌁</div><div><b>Surface mapping</b><span>Bounded same-origin crawl and HTTP status inventory.</span></div></div>
+    <div class="feature"><div class="ico">▤</div><div><b>Security hardening</b><span>HTTPS, CSP, HSTS, clickjacking and browser policy headers.</span></div></div>
+    <div class="feature"><div class="ico">◇</div><div><b>Form inventory</b><span>Lists observed form methods and input types; never submits data.</span></div></div>
+    <div class="feature"><div class="ico">↗</div><div><b>Evidence report</b><span>Observations, recommended fixes, JSON export and print/PDF.</span></div></div>
+  </aside>
+</div>
+<section class="panel results" id="results">
+  <div class="resulthead"><div><h3>Assessment report</h3><p class="sub" id="targetMeta"></p></div><span class="pill">REPORT READY</span></div>
+  <div class="stats">
+    <div class="stat"><strong id="highCount">0</strong><span>HIGH REVIEW</span></div>
+    <div class="stat"><strong id="medCount">0</strong><span>MEDIUM REVIEW</span></div>
+    <div class="stat"><strong id="lowCount">0</strong><span>LOW REVIEW</span></div>
+    <div class="stat"><strong id="pagesCount">0</strong><span>PAGES CRAWLED</span></div>
+    <div class="stat"><strong id="formsCount">0</strong><span>FORMS FOUND</span></div>
+  </div>
+  <div class="meta" id="techMeta"></div><div id="findings"></div>
+  <div class="mapgrid"><div class="listbox"><h4>Discovered pages</h4><ul id="pagesList"></ul></div><div class="listbox"><h4>Observed forms</h4><ul id="formsList"></ul></div></div>
+  <div class="actions"><button class="secondary" id="downloadBtn" type="button">↓ Export JSON</button><button class="secondary" id="printBtn" type="button">▤ Print / Save PDF</button><button class="secondary" id="copyBtn" type="button">Copy summary</button></div>
+  <p class="disclaimer" id="reportNote"></p>
+</section>
+<footer><div><div class="footbrand">NIGHT HEX <span>/</span> CYBER X OF BANGLADESH</div><div>Responsible security assessment · Non-destructive by design</div></div>
+<div>Telegram: <a href="{{ telegram_url }}" target="_blank" rel="noopener noreferrer">@NightHex_X</a><br>Channel: <a href="{{ channel_url }}" target="_blank" rel="noopener noreferrer">Join Telegram</a></div></footer>
+<p class="disclaimer">Use only with permission. This tool does not test SQL injection payloads, password guessing, authentication bypass, arbitrary file paths, or exploitability. Missing headers are observations, not confirmed vulnerabilities.</p>
+</div>
+<script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</body></html>
+  
