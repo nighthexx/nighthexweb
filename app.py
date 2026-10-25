@@ -1,5 +1,6 @@
 import os, re, io, zipfile, socket, ipaddress, time, secrets, json, html
-from collections import defaultdict
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse
 import requests
@@ -14,6 +15,9 @@ UA = 'NIGHT-HEX-Responsible-Audit/4.0'
 TIMEOUT = 8
 MAX_BODY = 350_000
 RATE_LIMIT_SECONDS = 12
+# Larger, still bounded crawl to avoid runaway requests and Render timeouts.
+MAX_PAGES = 40
+SCAN_BUDGET_SECONDS = 32
 _recent = defaultdict(float)
 
 
@@ -57,111 +61,343 @@ def fetch(url):
 
 
 def scan_site(raw):
-    root=fetch(raw); checks=[]; h=root['headers']; https=root['scheme']=='https'
-    def add(name,severity,status,detail,fix=''):
-        checks.append({'name':name,'severity':severity,'status':status,'detail':detail,'fix':fix})
-    add('HTTPS','high','PASS' if https else 'REVIEW','HTTPS used with certificate verification.' if https else 'Submitted URL uses HTTP; traffic is not encrypted.','Enable HTTPS and redirect HTTP to HTTPS.' if not https else '')
-    for key,label,sev,fix in [
-      ('strict-transport-security','HSTS','medium','Enable HSTS only after HTTPS works across the site and required subdomains.'),
-      ('content-security-policy','Content-Security-Policy','medium','Create a CSP based on the site’s required scripts, styles, images, and other resources.'),
+    """Bounded, non-destructive same-origin crawl and configuration review."""
+    scan_started = time.monotonic()
+    root = fetch(raw)
+    root_url = root['url']
+    root_parts = urlparse(root_url)
+    root_host = root_parts.hostname
+    checks = []
+    pages = [root]
+    seen = {root_url}
+    queue = deque()
+    soup0 = BeautifulSoup(root['body'], 'html.parser')
+    for a in soup0.find_all('a', href=True):
+        href = (a.get('href') or '').strip()
+        if not href or href.startswith(('#', 'mailto:', 'tel:', 'javascript:')):
+            continue
+        from urllib.parse import urljoin
+        candidate = urljoin(root_url, href)
+        parts = urlparse(candidate)
+        if parts.scheme not in ('http', 'https') or parts.hostname != root_host:
+            continue
+        if parts.username or parts.password or parts.port not in (None, 80, 443):
+            continue
+        # Crawl public page paths only; avoid query-driven actions and fragments.
+        if parts.query:
+            continue
+        candidate = urlunparse((parts.scheme, parts.netloc, parts.path or '/', '', '', ''))
+        if candidate not in seen:
+            seen.add(candidate)
+            queue.append(candidate)
+    while queue and len(pages) < MAX_PAGES and (time.monotonic() - scan_started) < SCAN_BUDGET_SECONDS:
+        candidate = queue.popleft()
+        try:
+            page = fetch(candidate)
+        except (ValueError, requests.RequestException):
+            continue
+        pages.append(page)
+        if 'text/html' not in (page.get('content_type') or '').lower() and page.get('body'):
+            continue
+        psoup = BeautifulSoup(page.get('body', ''), 'html.parser')
+        for a in psoup.find_all('a', href=True):
+            href = (a.get('href') or '').strip()
+            if not href or href.startswith(('#', 'mailto:', 'tel:', 'javascript:')):
+                continue
+            from urllib.parse import urljoin
+            parts = urlparse(urljoin(page['url'], href))
+            if parts.scheme not in ('http', 'https') or parts.hostname != root_host or parts.query or parts.username or parts.password:
+                continue
+            if parts.port not in (None, 80, 443):
+                continue
+            candidate2 = urlunparse((parts.scheme, parts.netloc, parts.path or '/', '', '', ''))
+            if candidate2 not in seen:
+                seen.add(candidate2)
+                queue.append(candidate2)
+
+    def add(name, severity, status, detail, fix='', page_url=None, confidence='Observed'):
+        item = {'name': name, 'severity': severity, 'status': status, 'detail': detail, 'fix': fix,
+                'page_url': page_url or root_url, 'confidence': confidence}
+        if status == 'REVIEW':
+            item['risk_priority'] = {'high': 80, 'medium': 55, 'low': 25}.get(severity, 15)
+        else:
+            item['risk_priority'] = 0
+        checks.append(item)
+
+    h = root['headers']; https = root['scheme'] == 'https'
+    add('HTTPS transport', 'high', 'PASS' if https else 'REVIEW',
+        'The target was requested over HTTPS and certificate verification succeeded.' if https else 'The submitted URL uses HTTP; browser-to-server traffic is not encrypted.',
+        '' if https else 'Enable a valid TLS certificate and redirect HTTP to HTTPS. Verify the canonical HTTPS URL and proxy/application scheme handling.', root_url)
+    if root['status'] in (301, 302, 303, 307, 308):
+        add('Redirect destination review', 'medium', 'REVIEW',
+            'The root response redirects to: ' + (root.get('location') or '(Location header missing)') + '. Redirects were not followed automatically.',
+            'Confirm the destination is the intended canonical host and uses HTTPS. Avoid redirecting to user-controlled destinations.', root_url, 'Manual review')
+    for key, label, sev, fix in [
+      ('strict-transport-security','HSTS','medium','After HTTPS is verified on every covered hostname, set Strict-Transport-Security: max-age=31536000. Add includeSubDomains only when every subdomain supports HTTPS.'),
+      ('content-security-policy','Content-Security-Policy','medium',"Start with a tested Content-Security-Policy such as default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'. Test with Report-Only first and allow only required origins."),
       ('x-content-type-options','X-Content-Type-Options','low','Set X-Content-Type-Options: nosniff.'),
-      ('referrer-policy','Referrer-Policy','low','Set a suitable Referrer-Policy.'),
-      ('permissions-policy','Permissions-Policy','low','Restrict browser capabilities the site does not need.')]:
-        ok=bool(h.get(key)); add(label,sev,'PASS' if ok else 'REVIEW','Header observed.' if ok else 'Header not observed in the root response; this is a hardening observation, not proof of exploitability.', '' if ok else fix)
-    csp=h.get('content-security-policy',''); frame=bool(h.get('x-frame-options')) or 'frame-ancestors' in csp.lower()
-    add('Clickjacking protection','medium','PASS' if frame else 'REVIEW','Frame protection header observed.' if frame else 'Neither X-Frame-Options nor CSP frame-ancestors was observed.','Set X-Frame-Options or a suitable CSP frame-ancestors directive.' if not frame else '')
-    cookies=h.get('set-cookie',''); flags=[]
+      ('referrer-policy','Referrer-Policy','low','Set Referrer-Policy: strict-origin-when-cross-origin.'),
+      ('permissions-policy','Permissions-Policy','low','Disable browser features the site does not need, for example camera=(), microphone=(), geolocation=(). Tune this to the application features.')]:
+        ok = bool(h.get(key))
+        add(label, sev, 'PASS' if ok else 'REVIEW', 'Header observed in the root response.' if ok else 'Header was not observed in the root response; this is a hardening observation, not proof of exploitability.', '' if ok else fix, root_url)
+    csp = h.get('content-security-policy', '')
+    frame = bool(h.get('x-frame-options')) or 'frame-ancestors' in csp.lower()
+    add('Clickjacking protection', 'medium', 'PASS' if frame else 'REVIEW',
+        'A frame-protection policy was observed.' if frame else 'Neither X-Frame-Options nor CSP frame-ancestors was observed in the root response.',
+        '' if frame else "If the site must not be embedded, set Content-Security-Policy: frame-ancestors 'none'; otherwise specify the legitimate framing origins.", root_url)
+    cookies = h.get('set-cookie', ''); flags = []
     if cookies:
-        low=cookies.lower()
+        low = cookies.lower()
         if https and 'secure' not in low: flags.append('Secure')
         if 'httponly' not in low: flags.append('HttpOnly')
         if 'samesite=' not in low: flags.append('SameSite')
-    add('Cookie security flags','medium','NOT OBSERVED' if not cookies else ('REVIEW' if flags else 'PASS'),'No Set-Cookie header observed.' if not cookies else ('Potential missing flags: '+', '.join(flags) if flags else 'Common flags observed.'),'Review each cookie individually; use Secure on HTTPS, HttpOnly where appropriate, and suitable SameSite.' if flags else '')
-    server=h.get('server',''); powered=h.get('x-powered-by','')
-    add('Server disclosure','low','REVIEW' if server or powered else 'PASS',f'Server: {server or "not set"}; X-Powered-By: {powered or "not set"}.','Minimize unnecessary product/version disclosure.' if server or powered else '')
-    soup=BeautifulSoup(root['body'],'html.parser')
-    forms=[]
-    for f in soup.find_all('form')[:100]:
-        forms.append({'method':(f.get('method') or 'GET').upper(),'action':(f.get('action') or '')[:300],'fields':[{'name':(e.get('name') or '')[:80],'type':(e.get('type') or e.name or 'text')[:30]} for e in f.find_all(['input','textarea','select','button'])[:50]]})
-    add('Page and form inventory','info','INFO',f'Inspected 1 page; found {len(forms)} form(s). No forms submitted and redirects were not followed.')
-    password_inputs=[e for f in soup.find_all('form') for e in f.find_all('input',attrs={'type':re.compile(r'^password$',re.I)})]
-    if password_inputs:
-        get_password_forms=[f for f in soup.find_all('form') if (f.get('method') or 'GET').upper()=='GET' and f.find('input',attrs={'type':re.compile(r'^password$',re.I)})]
-        add('Password form transport','high','REVIEW' if not https or get_password_forms else 'PASS',
-            'Password input is present. Review HTTPS and form method.' if not get_password_forms and https else ('A password form appears to use GET; credentials may enter URLs, logs, or browser history.' if get_password_forms else 'Password form is served over HTTP, not HTTPS.'),
-            'Use HTTPS and POST for credential submission; never place passwords in URL query strings.' if not https or get_password_forms else '')
-        missing_auto=sum(1 for e in password_inputs if not e.get('autocomplete'))
-        add('Password autocomplete guidance','low','REVIEW' if missing_auto else 'PASS',
-            f'{missing_auto} password input(s) lack an autocomplete attribute.' if missing_auto else 'Password input autocomplete attributes observed.',
-            'Set an intentional autocomplete value such as current-password or new-password.' if missing_auto else '')
-    # This is only a page-level hint; JavaScript-rendered and server-side protections cannot be confirmed here.
-    csrf_hints=sum(1 for f in soup.find_all('form') if (f.get('method') or 'GET').upper()=='POST' and not f.find('input',attrs={'name':re.compile(r'csrf|token',re.I)}))
-    if csrf_hints:
-        add('CSRF token hint','low','REVIEW',f'{csrf_hints} POST form(s) have no obvious CSRF/token input in the returned HTML. Tokens may be provided by another mechanism; this is not proof of CSRF.',
-            'Verify server-side CSRF protection for state-changing requests; use framework-supported CSRF middleware.')
-    counts={s:sum(1 for c in checks if c['severity']==s and c['status']=='REVIEW') for s in ('high','medium','low')}
-    # A transparent heuristic exposure indicator, not a probability that a site can be hacked.
-    score=0
-    weights={'high':22,'medium':12,'low':5}
-    for c in checks:
-        if c.get('status')=='REVIEW': score += weights.get(c.get('severity'),0)
-    exposure_score=min(100,score)
-    if exposure_score >= 60: exposure_level='Elevated exposure indicators'
-    elif exposure_score >= 30: exposure_level='Several exposure indicators'
-    elif exposure_score > 0: exposure_level='Some exposure indicators'
-    else: exposure_level='Few indicators observed'
-    return {'target':root['url'],'host':root['host'],'checked_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),'http_status':root['status'],'content_type':root['content_type'],'response_time':root['seconds'],'checks':checks,'forms':forms,'summary':counts,'exposure_score':exposure_score,'exposure_level':exposure_level,'exposure_score_note':'This 0–100 score summarizes observed configuration indicators from a limited passive scan. It is not the probability of being hacked and cannot confirm exploitability.','limitations':'Bounded passive scan only. No exploitation, credential testing, form submission, or access-control bypass. Findings are observations, not proof of a vulnerability.'}
+    add('Cookie security flags', 'medium', 'NOT OBSERVED' if not cookies else ('REVIEW' if flags else 'PASS'),
+        'No Set-Cookie header was observed in this response; session cookies may be set after login.' if not cookies else ('Potential missing flags: ' + ', '.join(flags) if flags else 'Common cookie flags were observed in the response.'),
+        'For session cookies, use Secure and HttpOnly on HTTPS and choose an appropriate SameSite value. Recheck authenticated responses because cookies may only appear after login.', root_url, 'Limited to cookies returned by this response')
+    server = h.get('server', ''); powered = h.get('x-powered-by', '')
+    add('Server technology disclosure', 'low', 'REVIEW' if server or powered else 'PASS',
+        f'Server: {server or "not set"}; X-Powered-By: {powered or "not set"}.',
+        'Remove unnecessary version/product disclosure where practical; this information alone is not a vulnerability.' if server or powered else '', root_url)
+
+    # Check response headers on every additional page too; a header present on the
+    # homepage is not assumed to be present on other routes.
+    header_specs = [
+        ('strict-transport-security', 'HSTS', 'medium', 'Enable HSTS only after HTTPS is verified across the intended hostnames.'),
+        ('content-security-policy', 'Content-Security-Policy', 'medium', "Test a restrictive Content-Security-Policy, preferably in Report-Only mode first."),
+        ('x-content-type-options', 'X-Content-Type-Options', 'low', 'Set X-Content-Type-Options: nosniff.'),
+        ('referrer-policy', 'Referrer-Policy', 'low', 'Set Referrer-Policy: strict-origin-when-cross-origin.'),
+        ('permissions-policy', 'Permissions-Policy', 'low', 'Disable browser capabilities the application does not need.'),
+    ]
+    for page in pages[1:]:
+        ph = page.get('headers', {})
+        for key, label, sev, fix in header_specs:
+            if not ph.get(key):
+                add(label + ' (page-specific)', sev, 'REVIEW',
+                    'Header was not observed on this page response. This is a hardening observation, not proof of exploitability.',
+                    fix, page['url'])
+        pcsp = ph.get('content-security-policy', '')
+        if not ph.get('x-frame-options') and 'frame-ancestors' not in pcsp.lower():
+            add('Clickjacking protection (page-specific)', 'medium', 'REVIEW',
+                'No X-Frame-Options or CSP frame-ancestors policy was observed on this page response.',
+                "If embedding is not required, set Content-Security-Policy: frame-ancestors 'none'; otherwise allow only trusted origins.", page['url'])
+        pserver, ppowered = ph.get('server', ''), ph.get('x-powered-by', '')
+        if pserver or ppowered:
+            add('Server technology disclosure (page-specific)', 'low', 'REVIEW',
+                f'Server: {pserver or "not set"}; X-Powered-By: {ppowered or "not set"}. This alone is not a vulnerability.',
+                'Remove unnecessary version/product disclosure where practical.', page['url'])
+
+    forms = []; priority = []
+    for page in pages:
+        soup = BeautifulSoup(page.get('body', ''), 'html.parser')
+        page_url = page['url']
+        path = urlparse(page_url).path.lower()
+        if any(k in path for k in ('login','signin','auth','account','admin')):
+            priority.append({'area': 'Login / account / admin route', 'page_url': page_url, 'reason': 'The URL path suggests an authentication or administrative area; review MFA, rate limits, authorization, and session handling manually.', 'priority': 'High manual review'})
+        for f in soup.find_all('form')[:100]:
+            method = (f.get('method') or 'GET').upper()
+            action = (f.get('action') or '')[:300]
+            fields = [{'name': (e.get('name') or '')[:80], 'type': (e.get('type') or e.name or 'text')[:30]} for e in f.find_all(['input','textarea','select','button'])[:50]]
+            forms.append({'page_url': page_url, 'method': method, 'action': action, 'fields': fields})
+            input_types = [x['type'].lower() for x in fields]
+            input_names = ' '.join(x['name'].lower() for x in fields)
+            has_password = 'password' in input_types
+            if has_password:
+                if not https or method == 'GET':
+                    why = 'Password form is served over HTTP.' if not https else 'Password form appears to use GET; query values can leak into URLs, history, or logs.'
+                    add('Password form transport', 'high', 'REVIEW', why,
+                        'Serve the form over HTTPS and submit credentials with POST. Never put passwords in URL query parameters.', page_url, 'Form markup observed; server behavior not tested')
+                missing_auto = sum(1 for e in f.find_all('input', attrs={'type': re.compile(r'^password$', re.I)}) if not e.get('autocomplete'))
+                if missing_auto:
+                    add('Password autocomplete guidance', 'low', 'REVIEW', f'{missing_auto} password input(s) lack autocomplete.',
+                        'Use autocomplete="current-password" for login and autocomplete="new-password" for account creation/reset. This is guidance, not proof of a vulnerability.', page_url)
+                priority.append({'area': 'Login / password form', 'page_url': page_url, 'reason': 'A password field is present. Manually verify MFA, rate limiting, password reset, session rotation, and account-enumeration protections.', 'priority': 'High manual review'})
+            if method == 'POST' and not any(re.search(r'csrf|token', x['name'], re.I) for x in fields):
+                add('CSRF token hint', 'low', 'REVIEW', 'POST form has no obvious CSRF/token input in returned HTML. Token handling may be elsewhere; this is not proof of CSRF.',
+                    'Confirm that every state-changing request has server-side CSRF protection. Do not rely only on a client-side token field.', page_url, 'HTML-only heuristic')
+            if any(k in input_names for k in ('search','query','filter','id','file','upload','redirect','url','path')):
+                priority.append({'area': 'Input-handling form', 'page_url': page_url, 'reason': 'A form field name suggests user-controlled input. Review server-side validation, output encoding, authorization, upload type/size limits, and safe redirect allowlists as applicable.', 'priority': 'Review'})
+        for e in soup.find_all(['input','textarea','select']):
+            typ = (e.get('type') or e.name or '').lower()
+            name = (e.get('name') or e.get('id') or '').lower()
+            if typ == 'file' or any(k in name for k in ('upload','file')):
+                priority.append({'area': 'File upload input', 'page_url': page_url, 'reason': 'An upload control is visible. Manually verify server-side file allowlists, size limits, random storage names, non-executable storage, and authorization.', 'priority': 'High manual review'})
+    if not forms:
+        add('Page and form inventory', 'info', 'INFO', f'Inspected {len(pages)} same-origin page(s); no HTML forms were found in returned markup. JavaScript-rendered forms may not be visible.', '', root_url)
+    else:
+        add('Page and form inventory', 'info', 'INFO', f'Inspected {len(pages)} same-origin page(s); found {len(forms)} HTML form(s). No forms were submitted.', '', root_url)
+    # Deduplicate identical page/area recommendations.
+    unique_priority = []
+    seen_priority = set()
+    for item in priority:
+        key = (item['area'], item['page_url'])
+        if key not in seen_priority:
+            seen_priority.add(key); unique_priority.append(item)
+    counts = {sev: sum(1 for c in checks if c['severity'] == sev and c['status'] == 'REVIEW') for sev in ('high','medium','low')}
+    weights = {'high': 30, 'medium': 15, 'low': 5}
+    score = min(100, sum(weights.get(c['severity'], 0) for c in checks if c['status'] == 'REVIEW'))
+    if score >= 60: level = 'Elevated indicators — prioritize review'
+    elif score >= 30: level = 'Several indicators — review recommended'
+    elif score > 0: level = 'Some indicators — hardening recommended'
+    else: level = 'Few indicators observed in this limited scan'
+    return {'target': root_url, 'host': root['host'], 'checked_at': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),
+            'http_status': root['status'], 'content_type': root['content_type'], 'response_time': root['seconds'],
+            'pages_scanned': len(pages), 'pages': [{'url': x['url'], 'http_status': x['status'], 'response_time': x['seconds']} for x in pages],
+            'checks': checks, 'forms': forms, 'priority_areas': unique_priority, 'summary': counts,
+            'exposure_score': score, 'exposure_level': level,
+            'exposure_score_note': '0–100 heuristic priority indicator based on observed configuration findings. It is NOT the probability or percentage chance of being hacked. The scan is limited and does not test exploitability.',
+            'limitations': f'Bounded passive same-origin crawl (up to {MAX_PAGES} pages or {SCAN_BUDGET_SECONDS} seconds, whichever comes first). Actual pages checked: {len(pages)}. It does not submit forms, authenticate, exploit vulnerabilities, test access-control bypass, or inspect server-side code. Findings and priority areas require authorized manual validation.'}
+
+
+def collect_domain_intelligence(domain):
+    """Fetch passive public DNS and certificate-transparency metadata from fixed providers."""
+    out = {'dns_records': [], 'certificate_names': [], 'intel_sources_status': {}}
+    tasks = []
+    # Fixed DoH endpoints only; never accept a user-supplied URL here.
+    for provider, endpoint in [('Google DNS', 'https://dns.google/resolve'), ('Cloudflare DNS', 'https://cloudflare-dns.com/dns-query')]:
+        for rrtype in ('A', 'AAAA', 'MX', 'NS', 'TXT', 'CAA'):
+            tasks.append((provider, rrtype, endpoint))
+    def lookup_dns(task):
+        provider, rrtype, endpoint = task
+        headers = {'User-Agent': UA}
+        if provider == 'Cloudflare DNS': headers['Accept'] = 'application/dns-json'
+        response = requests.get(endpoint, params={'name': domain, 'type': rrtype}, headers=headers, timeout=3)
+        response.raise_for_status()
+        payload = response.json()
+        return provider, rrtype, [str(a.get('data', '')).strip()[:500] for a in (payload.get('Answer') or [])[:30] if a.get('data')]
+    found = {'Google DNS': 0, 'Cloudflare DNS': 0}
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futures = [pool.submit(lookup_dns, task) for task in tasks]
+        for future in as_completed(futures):
+            try:
+                provider, rrtype, values = future.result()
+                for value in values:
+                    item = {'type': rrtype, 'value': value}
+                    if item not in out['dns_records']: out['dns_records'].append(item)
+                    found[provider] += 1
+            except Exception:
+                continue
+    for provider, count in found.items():
+        out['intel_sources_status'][provider] = 'records found' if count else 'no records / provider unavailable'
+    try:
+        # crt.sh returns public certificate names; cap the response size and number of names.
+        response = requests.get('https://crt.sh/', params={'q': '%25.' + domain, 'output': 'json'},
+                                headers={'User-Agent': UA, 'Accept': 'application/json'}, timeout=4, stream=True)
+        if response.ok:
+            chunks = []; total = 0
+            for chunk in response.iter_content(8192):
+                total += len(chunk); chunks.append(chunk)
+                if total > 1_500_000: break
+            if total <= 1_500_000:
+                rows = json.loads(b''.join(chunks).decode('utf-8', 'replace'))
+                names = set()
+                for row in rows if isinstance(rows, list) else []:
+                    for name in str(row.get('name_value', '')).splitlines():
+                        name = name.strip().lower().lstrip('*.')
+                        if name and (name == domain or name.endswith('.' + domain)):
+                            names.add(name)
+                        if len(names) >= 250: break
+                    if len(names) >= 250: break
+                out['certificate_names'] = sorted(names)
+        out['intel_sources_status']['Certificate Transparency'] = f'{len(out["certificate_names"])} public name(s) found'
+    except (requests.RequestException, ValueError, TypeError):
+        out['intel_sources_status']['Certificate Transparency'] = 'provider unavailable'
+    return out
 
 
 def domain_lookup(raw):
     domain=(raw or '').strip().lower().rstrip('.')
-    if domain.startswith('http://') or domain.startswith('https://'):
+    if domain.startswith(('http://','https://')):
         domain=urlparse(domain).hostname or ''
+    domain=domain.strip().rstrip('.')
     if not re.fullmatch(r'(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}',domain):
-        raise ValueError('Enter a valid domain name, e.g. example.com.')
+        raise ValueError('Enter a valid domain name, e.g. example.com. Do not include a path.')
     try:
-        # Fetch public registration data over RDAP; present the normalized fields in NIGHT HEX UI.
         r=requests.get('https://rdap.org/domain/'+domain,
-                       headers={'Accept':'application/rdap+json','User-Agent':UA},
-                       timeout=10,allow_redirects=True)
+                       headers={'Accept':'application/rdap+json, application/json','User-Agent':UA},
+                       timeout=14,allow_redirects=True)
         if r.status_code==404:
             return {'domain':domain,'status':'No public registration record found','handle':None,
                     'events':[],'nameservers':[],'entities':[],'domain_status':[],
-                    'secure_dns':None,'registrar':None,
-                    'note':'No public registration record was returned. This does not establish who owns the domain.'}
+                    'secure_dns':None,'registrar':None,'public_ids':[], 'links':[], 'notices':[],
+                    'rdap_conformance':[], 'raw_public_fields':{},
+                    **collect_domain_intelligence(domain),
+                    'note':'প্রকাশ্য রেজিস্ট্রেশন রেকর্ড পাওয়া যায়নি। DNS ও certificate-transparency তথ্য পাওয়া গেলে তা আলাদাভাবে দেখানো হয়েছে। এর অর্থ এই নয় যে ডোমেইনের মালিক নেই।'}
         r.raise_for_status()
         data=r.json()
+        if not isinstance(data,dict): raise ValueError('Invalid RDAP response')
     except (requests.RequestException,ValueError):
         raise ValueError('Public domain registration lookup failed or returned an invalid response. Try again later.')
 
     events=[]
-    for ev in data.get('events',[]):
-        action=ev.get('eventAction',''); date=ev.get('eventDate','')
-        if action and date: events.append({'action':action,'date':date})
-    nameservers=sorted({x.get('ldhName') for x in data.get('nameservers',[]) if x.get('ldhName')})
+    for ev in data.get('events',[]) or []:
+        if isinstance(ev,dict): events.append({'action':ev.get('eventAction',''), 'date':ev.get('eventDate',''), 'actor':ev.get('eventActor','')})
+    nameservers=[]
+    for x in data.get('nameservers',[]) or []:
+        if isinstance(x,dict):
+            entry={'name':x.get('ldhName') or x.get('unicodeName') or '', 'unicode_name':x.get('unicodeName') or '', 'status':x.get('status') or [], 'ip_addresses':x.get('ipAddresses') or {}}
+            if entry['name'] or entry['ip_addresses']: nameservers.append(entry)
     statuses=data.get('status',[]) or []
     secure_dns=data.get('secureDNS')
     entities=[]; registrar=None
-    for ent in data.get('entities',[]):
-        roles=ent.get('roles',[]); v=ent.get('vcardArray',[])
-        props=v[1] if isinstance(v,list) and len(v)>1 and isinstance(v[1],list) else []
-        card={}
+    def vcard_props(ent):
+        v=ent.get('vcardArray',[])
+        return v[1] if isinstance(v,list) and len(v)>1 and isinstance(v[1],list) else []
+    def flatten_entity(ent, parent_roles=None):
+        nonlocal registrar
+        if not isinstance(ent,dict): return
+        roles=ent.get('roles',[]) or parent_roles or []
+        props=vcard_props(ent); card={}
         for prop in props:
-            if len(prop)<4 or prop[0] not in ('fn','org','email','tel','adr'): continue
-            val=prop[3]
-            if prop[0]=='adr':
-                if isinstance(val,dict): val=', '.join(str(x) for x in val.values() if x)
-                elif isinstance(val,list): val=', '.join(str(x) for x in val if x)
-            if isinstance(val,(str,int,float)) and str(val).strip(): card[prop[0]]=str(val)[:250]
-        item={'roles':roles,'public_contact':card,'redacted':not bool(card)}
-        if card or roles: entities.append(item)
+            if len(prop)<4 or not isinstance(prop[0],str): continue
+            key=prop[0]; val=prop[3]
+            if key=='adr':
+                if isinstance(val,dict):
+                    country=val.get('country') or val.get('country-name')
+                    if country: card['country']=str(country)[:120]
+                    val=', '.join(str(x) for x in val.values() if x)
+                elif isinstance(val,list):
+                    if val and val[-1]: card['country']=str(val[-1])[:120]
+                    val=', '.join(str(x) for x in val if x)
+            elif isinstance(val,list): val=', '.join(str(x) for x in val if x)
+            elif isinstance(val,dict): val=json.dumps(val,ensure_ascii=False)
+            if isinstance(val,(str,int,float)) and str(val).strip():
+                card[key]=str(val)[:500]
+        item={'roles':roles,'public_contact':card,'handle':ent.get('handle'),'public_ids':ent.get('publicIds') or [],
+              'status':ent.get('status') or [], 'remarks':ent.get('remarks') or [],
+              'redacted':not bool(card)}
+        if card or roles or item['handle'] or item['public_ids'] or item['status']:
+            entities.append(item)
         if 'registrar' in roles and card:
             registrar=card.get('org') or card.get('fn') or registrar
-    return {'domain':data.get('ldhName',domain),'status':'Public registration record found',
-            'handle':data.get('handle'),'registrar':registrar,'events':events,
-            'nameservers':nameservers,'entities':entities,'domain_status':statuses,
-            'secure_dns':secure_dns,
-            'note':'Showing available public registration fields. Some registrant details may be privacy-redacted or not published; no private data is inferred or bypassed.'}
+        for child in ent.get('entities',[]) or []: flatten_entity(child, roles)
+    for ent in data.get('entities',[]) or []: flatten_entity(ent)
+    public_ids=[]
+    for item in data.get('publicIds',[]) or []:
+        if isinstance(item,dict): public_ids.append({'type':item.get('type',''), 'identifier':item.get('identifier','')})
+    links=[]
+    for item in data.get('links',[]) or []:
+        if isinstance(item,dict):
+            # Do not expose executable HTML; retain public RDAP link metadata for reference.
+            links.append({'rel':item.get('rel',''), 'type':item.get('type',''), 'href':item.get('href',''), 'value':item.get('value','')})
+    notices=[]
+    for item in data.get('notices',[]) or data.get('remarks',[]) or []:
+        if isinstance(item,dict):
+            notices.append({'title':item.get('title',''), 'type':item.get('type',''),
+                            'description':item.get('description',[]) or [], 'links':item.get('links',[]) or []})
+    # Retain all additional top-level public fields, excluding fields already normalized above.
+    known={'objectClassName','handle','ldhName','unicodeName','nameservers','events','status','secureDNS','entities','publicIds','links','notices','remarks','rdapConformance','port43','lang','arin_originas0_originautnums'}
+    raw_fields={k:v for k,v in data.items() if k not in known}
+    intelligence = collect_domain_intelligence(domain)
+    return {'domain':data.get('ldhName',domain),'unicode_name':data.get('unicodeName'),
+            'object_class_name':data.get('objectClassName'),'status':'Public registration record found',
+            'handle':data.get('handle'),'registrar':registrar,'events':events,'nameservers':nameservers,
+            'entities':entities,'domain_status':statuses,'secure_dns':secure_dns,
+            'public_ids':public_ids,'links':[],'notices':[],
+            'rdap_conformance':[],'port43':None,
+            'lang':data.get('lang'),'raw_public_fields':{},
+            'dns_records':intelligence.get('dns_records',[]),'certificate_names':intelligence.get('certificate_names',[]),
+            'intel_sources_status':intelligence.get('intel_sources_status',{}),
+            'note':'শুধু প্রকাশ্য রেজিস্ট্রেশন রেকর্ডে থাকা তথ্য দেখানো হয়েছে। রেজিস্ট্রি অনুযায়ী তথ্য ভিন্ন হতে পারে; কিছু যোগাযোগের তথ্য গোপন বা অপ্রকাশিত থাকতে পারে। কোনো ব্যক্তিগত তথ্য অনুমান বা বাইপাস করা হয়নি।'}
 
 # Conservative static source audit: flags suspicious patterns for human review; does not execute uploaded files.
 PATTERNS=[
@@ -209,7 +445,7 @@ def audit_zip(file):
                 if len(results)>=250: break
                 for title,sev,pattern,fix in PATTERNS:
                     if pattern.search(line):
-                        results.append({'file':name,'line':no,'title':title,'severity':sev,'evidence':line.strip()[:260],'fix':fix,'confidence':'Needs manual review'})
+                        results.append({'file':name,'line':no,'title':title,'severity':sev,'risk_priority':{'high':80,'medium':55,'low':25}.get(sev,15),'evidence':line.strip()[:260],'fix':fix,'confidence':'Needs manual review; pattern matches can be false positives'})
                         break
     return {'files_scanned':scanned,'findings':results,'note':'Heuristic static analysis only. Pattern matches can be false positives and do not prove exploitability. Uploaded files were not executed.'}
 
@@ -259,8 +495,16 @@ def api_export(fmt):
     except (TypeError,ValueError): return jsonify(error='Report data is invalid.'),400
     if len(raw)>1_500_000: return jsonify(error='Report is too large to export.'),413
     stamp=datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
+    # Make every export target-specific without including paths or unsafe characters.
+    target = str(report.get('target') or report.get('domain') or report.get('host') or 'source-audit')
+    try:
+        host = urlparse(target if '://' in target else 'https://' + target).hostname or target
+    except Exception:
+        host = target
+    slug = re.sub(r'[^a-zA-Z0-9.-]+', '-', host.lower()).strip('.-')[:100] or 'site-report'
+    base_name = f'night-hex-{slug}-{stamp}'
     if fmt=='json':
-        return Response(json.dumps(report,ensure_ascii=False,indent=2),mimetype='application/json',headers={'Content-Disposition':f'attachment; filename="night-hex-report-{stamp}.json"'})
+        return Response(json.dumps(report,ensure_ascii=False,indent=2),mimetype='application/json',headers={'Content-Disposition':f'attachment; filename="{base_name}.json"'})
     if fmt=='txt':
         lines=['NIGHT HEX SECURITY AUDIT REPORT','='*34]
         def walk(value, prefix=''):
@@ -272,7 +516,7 @@ def api_export(fmt):
                 for i,item in enumerate(value,1): lines.append(f'{prefix}[{i}]'); walk(item,prefix+'  ')
             else: lines.append(f'{prefix}{value}')
         walk(report)
-        return Response('\n'.join(lines),mimetype='text/plain; charset=utf-8',headers={'Content-Disposition':f'attachment; filename="night-hex-report-{stamp}.txt"'})
+        return Response('\n'.join(lines),mimetype='text/plain; charset=utf-8',headers={'Content-Disposition':f'attachment; filename="{base_name}.txt"'})
     try:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4
@@ -306,6 +550,6 @@ def api_export(fmt):
         return jsonify(error='PDF export dependency is missing. Redeploy after installing requirements.txt.'),500
 
 @app.get('/healthz')
-def health(): return jsonify(status='ok',service='night-hex-advanced-v8')
+def health(): return jsonify(status='ok',service='night-hex-advanced-v15')
 
 if __name__=='__main__': app.run(host='0.0.0.0',port=int(os.environ.get('PORT','5000')),debug=False)

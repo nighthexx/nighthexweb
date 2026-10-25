@@ -1,4 +1,4 @@
-# NIGHT HEX Advanced v6
+# NIGHT HEX Advanced v15
 
 Flask security-audit dashboard for bounded passive website checks, public RDAP domain lookup, heuristic static source-code review, and downloadable JSON/TXT/PDF reports.
 
@@ -36,3 +36,49 @@ Flask security-audit dashboard for bounded passive website checks, public RDAP d
 - Website scans, Domain Intelligence lookups, and source ZIP audits open in a shared responsive results modal.
 - The modal displays an animated loading state and keeps results in a scrollable panel.
 - JSON, TXT, and PDF export actions use compact rounded download pills.
+
+
+## V10 updates (based on V9)
+- Expanded public RDAP registration data presentation: status, IDs, events, nameservers, DNSSEC, registrar/contact entities, notices and extra public fields when returned.
+- More actionable remediation guidance, including example header/config values; validate against your stack before deployment.
+- Website input accepts a bare domain such as `example.com`; HTTPS is added by the backend if omitted.
+- Closing a results modal clears the old report so it does not reappear beneath the search box.
+- Footer uses a single `CYBER X OF BANGLADESH` channel link (no separate Join Channel tile).
+
+Deploy on Render using the existing Python/Flask setup. Commit the extracted project files to GitHub and let the connected Render service redeploy. Do not upload `__pycache__`.
+
+
+## v11 updates
+- Removed registry notice/link/conformance/reference sections from the visible Domain Information output.
+- Contact sections are shown separately for Registrant, Administrative, Technical, and Registrar; unavailable details are labelled rather than silently omitted.
+- Refreshed the Telegram channel and admin contact cards with Telegram icons and stronger colour styling.
+- Website scanning remains passive and does not attempt exploitation or claim a fabricated probability of compromise.
+
+## v12 additions
+- Each finding now includes a transparent 0–100 risk-priority indicator based on the finding severity and status. It is explicitly **not** a probability of being hacked.
+- Each website-scan and source-code finding has an optional Bengali explanation with plain-language meaning and next steps.
+- Website scan remains bounded/passive; it does not attempt exploitation, credential attacks, access-control bypass, or taking over a site. Use only on systems you own or are authorized to assess.
+
+
+## V13 scan/report improvements
+- Website scan follows a bounded set of same-origin public HTML pages using GET only; current cap and time budget are documented in V15 below. It does not submit forms or follow redirects automatically.
+- Findings include the page URL, observed evidence, remediation guidance, and a transparent 0–100 risk-priority indicator.
+- Publicly visible login/admin, password, upload, and input-handling forms are surfaced as manual review priorities, not confirmed vulnerabilities.
+- The overall Exposure Indicator is a heuristic hardening-priority score, not a probability or percentage chance of being hacked.
+- The scan does not exploit vulnerabilities, guess passwords, bypass authentication, or test private resources.
+
+
+## V14 improvements (retained)
+- JSON/TXT/PDF exports use target-specific names such as `night-hex-example.com-YYYYMMDD-HHMMSS.json`.
+- Static source findings include selected illustrative remediation snippets for common patterns (SQL parameterization, unsafe HTML sinks, TLS verification, secrets, weak password hashing, path handling, debug mode, and session-cookie settings). Examples must be adapted and tested for the application's actual framework.
+- Health endpoint reports `night-hex-advanced-v15`.
+- Existing footer retains exactly two Telegram actions: the official CYBER X OF BANGLADESH channel and NIGHT HEX admin contact.
+
+No guarantee is made that every bug can be automatically found or fixed. The public URL scan cannot see private backend source code; upload an authorized source ZIP for static code review. It does not perform exploitation, credential attacks, authentication bypass, private-data extraction, or reveal privacy-redacted domain contacts. A numeric risk-priority score is not a real-world probability of being hacked.
+
+
+## V15 improvements
+- Website crawler now checks up to 40 same-origin public pages or 32 seconds, whichever comes first. This is a safety/time budget rather than an eight-page cap; pages are fetched with GET only and no forms are submitted.
+- The report shows all collected findings and discovered review areas rather than truncating the review-area list in the UI. The 0–100 indicator is displayed as a risk-priority percentage for triage, **not** as the real probability of being hacked.
+- Domain Intelligence combines public RDAP registration data with public DNS record queries (A, AAAA, MX, NS, TXT, CAA) and public Certificate Transparency names. The frontend displays the collected values without external reference links. Providers can be unavailable and results are not exhaustive.
+- No exploit payloads, credential attacks, authentication bypass, private-data access, or privacy-redaction bypass were added. For exact code locations, upload an authorized source ZIP; a URL-only scan cannot see private backend code.
