@@ -36,3 +36,13 @@ Flask security-audit dashboard for bounded passive website checks, public RDAP d
 - Website scans, Domain Intelligence lookups, and source ZIP audits open in a shared responsive results modal.
 - The modal displays an animated loading state and keeps results in a scrollable panel.
 - JSON, TXT, and PDF export actions use compact rounded download pills.
+
+
+## V10 updates (based on V9)
+- Expanded public RDAP registration data presentation: status, IDs, events, nameservers, DNSSEC, registrar/contact entities, notices and extra public fields when returned.
+- More actionable remediation guidance, including example header/config values; validate against your stack before deployment.
+- Website input accepts a bare domain such as `example.com`; HTTPS is added by the backend if omitted.
+- Closing a results modal clears the old report so it does not reappear beneath the search box.
+- Footer uses a single `CYBER X OF BANGLADESH` channel link (no separate Join Channel tile).
+
+Deploy on Render using the existing Python/Flask setup. Commit the extracted project files to GitHub and let the connected Render service redeploy. Do not upload `__pycache__`.

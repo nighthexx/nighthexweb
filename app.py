@@ -60,23 +60,23 @@ def scan_site(raw):
     root=fetch(raw); checks=[]; h=root['headers']; https=root['scheme']=='https'
     def add(name,severity,status,detail,fix=''):
         checks.append({'name':name,'severity':severity,'status':status,'detail':detail,'fix':fix})
-    add('HTTPS','high','PASS' if https else 'REVIEW','HTTPS used with certificate verification.' if https else 'Submitted URL uses HTTP; traffic is not encrypted.','Enable HTTPS and redirect HTTP to HTTPS.' if not https else '')
+    add('HTTPS','high','PASS' if https else 'REVIEW','HTTPS used with certificate verification.' if https else 'Submitted URL uses HTTP; traffic is not encrypted.',('Enable a valid TLS certificate, then redirect HTTP to HTTPS. Nginx example: return 301 https://$host$request_uri; Apache example: RewriteEngine On; RewriteCond %{HTTPS} !=on; RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]. Verify the app/proxy handles HTTPS correctly.' if not https else ''))
     for key,label,sev,fix in [
-      ('strict-transport-security','HSTS','medium','Enable HSTS only after HTTPS works across the site and required subdomains.'),
-      ('content-security-policy','Content-Security-Policy','medium','Create a CSP based on the site’s required scripts, styles, images, and other resources.'),
+      ('strict-transport-security','HSTS','medium','After HTTPS is verified on every covered hostname, set Strict-Transport-Security: max-age=31536000; includeSubDomains only if every subdomain supports HTTPS. Nginx: add_header Strict-Transport-Security "max-age=31536000" always; Apache: Header always set Strict-Transport-Security "max-age=31536000". Do not enable includeSubDomains unless safe.'),
+      ('content-security-policy','Content-Security-Policy','medium',"Start with a tested policy, then tune it to the app. Example baseline: Content-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'. If the site embeds or loads external resources, explicitly allow the required origins; test Report-Only first to avoid breaking the site."),
       ('x-content-type-options','X-Content-Type-Options','low','Set X-Content-Type-Options: nosniff.'),
-      ('referrer-policy','Referrer-Policy','low','Set a suitable Referrer-Policy.'),
-      ('permissions-policy','Permissions-Policy','low','Restrict browser capabilities the site does not need.')]:
+      ('referrer-policy','Referrer-Policy','low','Set Referrer-Policy: strict-origin-when-cross-origin. Nginx: add_header Referrer-Policy "strict-origin-when-cross-origin" always; Apache: Header always set Referrer-Policy "strict-origin-when-cross-origin".'),
+      ('permissions-policy','Permissions-Policy','low','Example for a site that does not use these features: Permissions-Policy: camera=(), microphone=(), geolocation=(). Remove or adjust directives for features the site actually needs.')]:
         ok=bool(h.get(key)); add(label,sev,'PASS' if ok else 'REVIEW','Header observed.' if ok else 'Header not observed in the root response; this is a hardening observation, not proof of exploitability.', '' if ok else fix)
     csp=h.get('content-security-policy',''); frame=bool(h.get('x-frame-options')) or 'frame-ancestors' in csp.lower()
-    add('Clickjacking protection','medium','PASS' if frame else 'REVIEW','Frame protection header observed.' if frame else 'Neither X-Frame-Options nor CSP frame-ancestors was observed.','Set X-Frame-Options or a suitable CSP frame-ancestors directive.' if not frame else '')
+    add('Clickjacking protection','medium','PASS' if frame else 'REVIEW','Frame protection header observed.' if frame else 'Neither X-Frame-Options nor CSP frame-ancestors was observed.',"For sites that must not be embedded: Content-Security-Policy: frame-ancestors 'none'; alternatively set X-Frame-Options: DENY. If legitimate framing is required, use a specific allowlist in CSP instead." if not frame else '')
     cookies=h.get('set-cookie',''); flags=[]
     if cookies:
         low=cookies.lower()
         if https and 'secure' not in low: flags.append('Secure')
         if 'httponly' not in low: flags.append('HttpOnly')
         if 'samesite=' not in low: flags.append('SameSite')
-    add('Cookie security flags','medium','NOT OBSERVED' if not cookies else ('REVIEW' if flags else 'PASS'),'No Set-Cookie header observed.' if not cookies else ('Potential missing flags: '+', '.join(flags) if flags else 'Common flags observed.'),'Review each cookie individually; use Secure on HTTPS, HttpOnly where appropriate, and suitable SameSite.' if flags else '')
+    add('Cookie security flags','medium','NOT OBSERVED' if not cookies else ('REVIEW' if flags else 'PASS'),'No Set-Cookie header observed.' if not cookies else ('Potential missing flags: '+', '.join(flags) if flags else 'Common flags observed.'),'For session cookies on HTTPS, use Set-Cookie: session=…; Path=/; Secure; HttpOnly; SameSite=Lax (keep the real cookie name/value). Set Secure only when HTTPS is configured; choose SameSite=None; Secure only when cross-site cookies are required.' if flags else '')
     server=h.get('server',''); powered=h.get('x-powered-by','')
     add('Server disclosure','low','REVIEW' if server or powered else 'PASS',f'Server: {server or "not set"}; X-Powered-By: {powered or "not set"}.','Minimize unnecessary product/version disclosure.' if server or powered else '')
     soup=BeautifulSoup(root['body'],'html.parser')
@@ -93,12 +93,12 @@ def scan_site(raw):
         missing_auto=sum(1 for e in password_inputs if not e.get('autocomplete'))
         add('Password autocomplete guidance','low','REVIEW' if missing_auto else 'PASS',
             f'{missing_auto} password input(s) lack an autocomplete attribute.' if missing_auto else 'Password input autocomplete attributes observed.',
-            'Set an intentional autocomplete value such as current-password or new-password.' if missing_auto else '')
+            'For a login field use <input type="password" name="password" autocomplete="current-password">; for account creation/reset use autocomplete="new-password". This is a usability/security hint, not an exploit finding.' if missing_auto else '')
     # This is only a page-level hint; JavaScript-rendered and server-side protections cannot be confirmed here.
     csrf_hints=sum(1 for f in soup.find_all('form') if (f.get('method') or 'GET').upper()=='POST' and not f.find('input',attrs={'name':re.compile(r'csrf|token',re.I)}))
     if csrf_hints:
         add('CSRF token hint','low','REVIEW',f'{csrf_hints} POST form(s) have no obvious CSRF/token input in the returned HTML. Tokens may be provided by another mechanism; this is not proof of CSRF.',
-            'Verify server-side CSRF protection for state-changing requests; use framework-supported CSRF middleware.')
+            'Enable server-side CSRF middleware for every state-changing request. Flask: use Flask-WTF CSRFProtect(app) and include the generated CSRF token in forms/AJAX; Django: keep CsrfViewMiddleware and {% csrf_token %}. Do not rely only on a hidden field without server-side validation.')
     counts={s:sum(1 for c in checks if c['severity']==s and c['status']=='REVIEW') for s in ('high','medium','low')}
     # A transparent heuristic exposure indicator, not a probability that a site can be hacked.
     score=0
@@ -115,53 +115,89 @@ def scan_site(raw):
 
 def domain_lookup(raw):
     domain=(raw or '').strip().lower().rstrip('.')
-    if domain.startswith('http://') or domain.startswith('https://'):
+    if domain.startswith(('http://','https://')):
         domain=urlparse(domain).hostname or ''
+    domain=domain.strip().rstrip('.')
     if not re.fullmatch(r'(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}',domain):
-        raise ValueError('Enter a valid domain name, e.g. example.com.')
+        raise ValueError('Enter a valid domain name, e.g. example.com. Do not include a path.')
     try:
-        # Fetch public registration data over RDAP; present the normalized fields in NIGHT HEX UI.
         r=requests.get('https://rdap.org/domain/'+domain,
-                       headers={'Accept':'application/rdap+json','User-Agent':UA},
-                       timeout=10,allow_redirects=True)
+                       headers={'Accept':'application/rdap+json, application/json','User-Agent':UA},
+                       timeout=14,allow_redirects=True)
         if r.status_code==404:
             return {'domain':domain,'status':'No public registration record found','handle':None,
                     'events':[],'nameservers':[],'entities':[],'domain_status':[],
-                    'secure_dns':None,'registrar':None,
+                    'secure_dns':None,'registrar':None,'public_ids':[], 'links':[], 'notices':[],
+                    'rdap_conformance':[], 'raw_public_fields':{},
                     'note':'No public registration record was returned. This does not establish who owns the domain.'}
         r.raise_for_status()
         data=r.json()
+        if not isinstance(data,dict): raise ValueError('Invalid RDAP response')
     except (requests.RequestException,ValueError):
         raise ValueError('Public domain registration lookup failed or returned an invalid response. Try again later.')
 
     events=[]
-    for ev in data.get('events',[]):
-        action=ev.get('eventAction',''); date=ev.get('eventDate','')
-        if action and date: events.append({'action':action,'date':date})
-    nameservers=sorted({x.get('ldhName') for x in data.get('nameservers',[]) if x.get('ldhName')})
+    for ev in data.get('events',[]) or []:
+        if isinstance(ev,dict): events.append({'action':ev.get('eventAction',''), 'date':ev.get('eventDate',''), 'actor':ev.get('eventActor','')})
+    nameservers=[]
+    for x in data.get('nameservers',[]) or []:
+        if isinstance(x,dict):
+            entry={'name':x.get('ldhName') or x.get('unicodeName') or '', 'unicode_name':x.get('unicodeName') or '', 'status':x.get('status') or [], 'ip_addresses':x.get('ipAddresses') or {}}
+            if entry['name'] or entry['ip_addresses']: nameservers.append(entry)
     statuses=data.get('status',[]) or []
     secure_dns=data.get('secureDNS')
     entities=[]; registrar=None
-    for ent in data.get('entities',[]):
-        roles=ent.get('roles',[]); v=ent.get('vcardArray',[])
-        props=v[1] if isinstance(v,list) and len(v)>1 and isinstance(v[1],list) else []
-        card={}
+    def vcard_props(ent):
+        v=ent.get('vcardArray',[])
+        return v[1] if isinstance(v,list) and len(v)>1 and isinstance(v[1],list) else []
+    def flatten_entity(ent, parent_roles=None):
+        nonlocal registrar
+        if not isinstance(ent,dict): return
+        roles=ent.get('roles',[]) or parent_roles or []
+        props=vcard_props(ent); card={}
         for prop in props:
-            if len(prop)<4 or prop[0] not in ('fn','org','email','tel','adr'): continue
-            val=prop[3]
-            if prop[0]=='adr':
+            if len(prop)<4 or not isinstance(prop[0],str): continue
+            key=prop[0]; val=prop[3]
+            if key=='adr':
                 if isinstance(val,dict): val=', '.join(str(x) for x in val.values() if x)
                 elif isinstance(val,list): val=', '.join(str(x) for x in val if x)
-            if isinstance(val,(str,int,float)) and str(val).strip(): card[prop[0]]=str(val)[:250]
-        item={'roles':roles,'public_contact':card,'redacted':not bool(card)}
-        if card or roles: entities.append(item)
+            elif isinstance(val,list): val=', '.join(str(x) for x in val if x)
+            elif isinstance(val,dict): val=json.dumps(val,ensure_ascii=False)
+            if isinstance(val,(str,int,float)) and str(val).strip():
+                card[key]=str(val)[:500]
+        item={'roles':roles,'public_contact':card,'handle':ent.get('handle'),'public_ids':ent.get('publicIds') or [],
+              'status':ent.get('status') or [], 'remarks':ent.get('remarks') or [],
+              'redacted':not bool(card)}
+        if card or roles or item['handle'] or item['public_ids'] or item['status']:
+            entities.append(item)
         if 'registrar' in roles and card:
             registrar=card.get('org') or card.get('fn') or registrar
-    return {'domain':data.get('ldhName',domain),'status':'Public registration record found',
-            'handle':data.get('handle'),'registrar':registrar,'events':events,
-            'nameservers':nameservers,'entities':entities,'domain_status':statuses,
-            'secure_dns':secure_dns,
-            'note':'Showing available public registration fields. Some registrant details may be privacy-redacted or not published; no private data is inferred or bypassed.'}
+        for child in ent.get('entities',[]) or []: flatten_entity(child, roles)
+    for ent in data.get('entities',[]) or []: flatten_entity(ent)
+    public_ids=[]
+    for item in data.get('publicIds',[]) or []:
+        if isinstance(item,dict): public_ids.append({'type':item.get('type',''), 'identifier':item.get('identifier','')})
+    links=[]
+    for item in data.get('links',[]) or []:
+        if isinstance(item,dict):
+            # Do not expose executable HTML; retain public RDAP link metadata for reference.
+            links.append({'rel':item.get('rel',''), 'type':item.get('type',''), 'href':item.get('href',''), 'value':item.get('value','')})
+    notices=[]
+    for item in data.get('notices',[]) or data.get('remarks',[]) or []:
+        if isinstance(item,dict):
+            notices.append({'title':item.get('title',''), 'type':item.get('type',''),
+                            'description':item.get('description',[]) or [], 'links':item.get('links',[]) or []})
+    # Retain all additional top-level public fields, excluding fields already normalized above.
+    known={'objectClassName','handle','ldhName','unicodeName','nameservers','events','status','secureDNS','entities','publicIds','links','notices','remarks','rdapConformance','port43','lang','arin_originas0_originautnums'}
+    raw_fields={k:v for k,v in data.items() if k not in known}
+    return {'domain':data.get('ldhName',domain),'unicode_name':data.get('unicodeName'),
+            'object_class_name':data.get('objectClassName'),'status':'Public registration record found',
+            'handle':data.get('handle'),'registrar':registrar,'events':events,'nameservers':nameservers,
+            'entities':entities,'domain_status':statuses,'secure_dns':secure_dns,
+            'public_ids':public_ids,'links':links,'notices':notices,
+            'rdap_conformance':data.get('rdapConformance') or [],'port43':data.get('port43'),
+            'lang':data.get('lang'),'raw_public_fields':raw_fields,
+            'note':'Showing public registration data returned by the domain registry/RDAP service. Fields vary by registry and some registrant details may be privacy-redacted or not published; no private data is inferred or bypassed.'}
 
 # Conservative static source audit: flags suspicious patterns for human review; does not execute uploaded files.
 PATTERNS=[
