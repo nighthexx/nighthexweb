@@ -36,8 +36,8 @@
   <section class="panel tabpanel" id="tab-scan">
     <div class="panel-head"><div><div class="kicker">01 / LIVE WEBSITE</div><h3>Website Security Scan</h3><p>পাবলিক HTTP response ও security configuration-এর সীমিত পরীক্ষা।</p></div><span class="status-chip">PASSIVE</span></div>
     <label for="url">Target website URL</label>
-    <div class="inputrow"><input id="url" type="url" placeholder="https://example.com" autocomplete="url"><button id="scanBtn" class="primary">Scan Website <span>→</span></button></div>
-    <div class="helper">শুধু নিজের বা লিখিত অনুমতি থাকা সাইট পরীক্ষা করুন। কোনো ফর্ম submit, credential guessing, exploit বা private file access করা হয় না।</div>
+    <div class="inputrow"><input id="url" type="text" inputmode="url" placeholder="example.com" autocomplete="url"><button id="scanBtn" class="primary">Scan Website <span>→</span></button></div>
+    <div class="helper">উদাহরণ: example.com — http:// বা https:// দেওয়া বাধ্যতামূলক নয়। শুধু নিজের বা লিখিত অনুমতি থাকা সাইট পরীক্ষা করুন। কোনো ফর্ম submit, credential guessing, exploit বা private file access করা হয় না।</div>
     <div class="result" id="scanResult" aria-live="polite"></div>
   </section>
 
@@ -54,7 +54,7 @@
   <section class="panel tabpanel hidden" id="tab-domain">
     <div class="panel-head"><div><div class="kicker">03 / PUBLIC REGISTRATION DATA</div><h3>Domain Information</h3><p>ডোমেনের প্রকাশ্য রেজিস্ট্রেশন তথ্য খুঁজে সুন্দরভাবে সাজানো ফলাফল দেখুন।</p></div><span class="status-chip">PUBLIC DATA</span></div>
     <label for="domain">Domain name</label><div class="inputrow"><input id="domain" placeholder="example.com" autocomplete="off"><button id="domainBtn" class="primary">Lookup Domain <span>→</span></button></div>
-    <div class="helper">রেজিস্ট্রেশন রেকর্ড খোঁজা হচ্ছে। কেবল প্রকাশ্যে উপলভ্য তথ্য দেখানো হবে; গোপন ব্যক্তিগত তথ্য অনুমান বা বাইপাস করা হবে না।</div>
+    <div class="helper">শুধু ডোমেইন লিখুন, যেমন example.com — HTTP/HTTPS বা /path লাগবে না। রেজিস্ট্রেশন রেকর্ড খোঁজা হচ্ছে। কেবল প্রকাশ্যে উপলভ্য তথ্য দেখানো হবে; গোপন ব্যক্তিগত তথ্য অনুমান বা বাইপাস করা হবে না।</div>
     <div class="result" id="domainResult" aria-live="polite"></div>
   </section>
 
@@ -66,8 +66,7 @@
     <div><strong>NIGHT HEX</strong><small>RESPONSIBLE SECURITY TOOLS</small></div>
   </div>
   <div class="footer-links">
-    <a class="footer-link" href="{{ channel_url }}" target="_blank" rel="noopener noreferrer"><span class="footer-link-icon">◈</span><span><strong>CYBER X OF BANGLADESH</strong><small>Official Telegram Channel</small></span><span class="footer-arrow">↗</span></a>
-    <a class="footer-link join-link" href="{{ channel_url }}" target="_blank" rel="noopener noreferrer"><span class="footer-link-icon">➤</span><span><strong>JOIN TELEGRAM CHANNEL</strong><small>Updates, news & announcements</small></span><span class="footer-arrow">↗</span></a>
+    <a class="footer-link" href="{{ channel_url }}" target="_blank" rel="noopener noreferrer"><span><strong>CYBER X OF BANGLADESH</strong></span><span class="footer-arrow">↗</span></a>
     <a class="footer-link" href="{{ telegram_url }}" target="_blank" rel="noopener noreferrer"><span class="footer-link-icon">⌁</span><span><strong>ADMIN / DEVELOPER CONTACT</strong><small>Contact NIGHT HEX on Telegram</small></span><span class="footer-arrow">↗</span></a>
   </div>
   <div class="footer-bottom"><span>© NIGHT HEX · Security with responsibility</span><span class="footer-status"><i></i> SAFE MODE ENABLED</span></div>
